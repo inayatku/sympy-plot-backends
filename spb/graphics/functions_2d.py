@@ -1,6 +1,8 @@
 from sympy import (
     sin, cos, Piecewise, piecewise_fold, Interval, Union,
-    FiniteSet, Eq, Ne, Expr, Plane, Curve, Point3D
+    FiniteSet, Eq, Ne, Expr, Plane, Curve, Point3D,
+    And, Heaviside, ceiling, degree, floor, frac, limit, sign, solveset,
+    together
 )
 from sympy.core.relational import Relational
 from sympy.geometry.line import LinearEntity3D
@@ -134,6 +136,96 @@ def _process_piecewise(piecewise, _range, label, **kwargs):
     return series
 
 
+def _jumps_to_piecewise(expr, _range, max_pieces=100):
+    """
+    Rewrite sign, Heaviside, floor, ceiling and frac as Piecewise over the
+    plotting range, so that their jumps are drawn with dots.
+
+    floor, ceiling and frac are rewritten only when their argument is linear
+    in the plotting variable and the range covers at most ``max_pieces``
+    integer steps. Otherwise they are left unchanged.
+    """
+    x, a, b = _range
+
+    def steps(g, kind):
+        if not g.is_polynomial(x) or degree(g, x) != 1:
+            return None
+        lo, hi = sorted([g.subs(x, a), g.subs(x, b)])
+        if hi - lo > max_pieces:
+            return None
+        if kind == "floor":
+            return Piecewise(*[
+                (k, (g >= k) & (g < k + 1))
+                for k in range(int(floor(lo)), int(floor(hi)) + 1)])
+        return Piecewise(*[
+            (k, (g > k - 1) & (g <= k))
+            for k in range(int(ceiling(lo)), int(ceiling(hi)) + 1)])
+
+    def rewrite(e):
+        g = e.args[0]
+        if isinstance(e, sign):
+            # the plotting variable is real; SymPy only rewrites sign of a
+            # real argument, so build the same Piecewise here
+            return Piecewise((1, g > 0), (-1, g < 0), (0, True))
+        if isinstance(e, Heaviside):
+            return e.rewrite(Piecewise)
+        new = steps(g, "ceiling" if isinstance(e, ceiling) else "floor")
+        if new is None:
+            return e
+        # frac(g) = g - floor(g)
+        return g - new if isinstance(e, frac) else new
+
+    def is_jump(e):
+        jump_types = (sign, Heaviside, floor, ceiling, frac)
+        return isinstance(e, jump_types) and e.has(x)
+
+    return piecewise_fold(expr.replace(is_jump, rewrite))
+
+
+def _removable_points(expr, _range, max_points=20):
+    """
+    Return the points of the plotting range where ``expr`` is undefined
+    (a zero of its denominator) but both one-sided limits are finite, as
+    for the hole of (x**2 - 1) / (x - 1) at x = 1 or the jump of
+    Abs(x) / x at x = 0. Poles are not returned.
+
+    Only denominators that are polynomials in the plotting variable are
+    examined.
+    """
+    x, a, b = _range
+    den = together(expr).as_numer_denom()[1]
+    if not den.has(x) or not den.is_polynomial(x):
+        return []
+    zeros = solveset(den, x, Interval(a, b))
+    if not isinstance(zeros, FiniteSet) or len(zeros) > max_points:
+        return []
+    points = []
+    for c in sorted(zeros):
+        sides = (["-"] if c > a else []) + (["+"] if c < b else [])
+        try:
+            limits = [limit(expr, x, c, side) for side in sides]
+        except (NotImplementedError, ValueError, TypeError):
+            continue
+        if limits and all(lim.is_finite for lim in limits):
+            points.append(c)
+    return points
+
+
+def _prepare_piecewise(expr, _range):
+    """
+    Prepare an expression for ``_process_piecewise``: rewrite the functions
+    that jump, and remove from the domain the points where the expression is
+    undefined but has finite one-sided limits, so that they get empty dots.
+    """
+    points = _removable_points(expr, _range)
+    expr = _jumps_to_piecewise(expr, _range)
+    if points:
+        x = _range[0]
+        expr = piecewise_fold(
+            Piecewise((expr, And(*[Ne(x, c) for c in points]))))
+    return expr
+
+
 def _build_line_series(expr, r, label, **kwargs):
     """
     Loop over the provided arguments. If a piecewise function is found,
@@ -141,6 +233,8 @@ def _build_line_series(expr, r, label, **kwargs):
     """
     series = []
     pp = kwargs.get("process_piecewise", False)
+    if not callable(expr) and pp:
+        expr = _prepare_piecewise(expr, r)
     if not callable(expr) and expr.has(Piecewise) and pp:
         series += _process_piecewise(expr, r, label, **kwargs)
     else:

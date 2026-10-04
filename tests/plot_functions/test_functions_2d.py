@@ -20,7 +20,7 @@ from sympy import (
     And, Or, Eq, Ne, Interval, Sum, oo, I, pi, S,
     sympify, Integral, Circle, Point, Ellipse, Rational,
     Polygon, Curve, Segment, Point2D, Point3D, Line3D, Plane, IndexedBase,
-    Function
+    Function, sign, floor, ceiling, frac
 )
 from sympy.testing.pytest import skip
 from sympy.external import import_module
@@ -632,6 +632,70 @@ def test_plot_piecewise_multiple_functions(p_options):
         label=["A", "B"], **p_options)
     assert len(p.series) == 9
     assert len([s for s in p.series if s.get_label(True)]) == 2
+
+
+def _dots(p):
+    # (x, y, filled) of every dot of a plot, rounded and sorted
+    return sorted(
+        (round(float(t.get_data()[0][i]), 3) + 0.0,
+         round(float(t.get_data()[1][i]), 3) + 0.0, t.is_filled)
+        for t in p.series if isinstance(t, List2DSeries)
+        for i in range(len(t.get_data()[0])))
+
+
+def test_plot_piecewise_jump_functions(p_options):
+    # Verify that sign, Heaviside, floor, ceiling and frac are rewritten as
+    # Piecewise, so that their jumps get filled and empty dots instead of
+    # vertical lines.
+
+    x = symbols("x")
+    p = plot_piecewise(sign(x), (x, -2, 2), **p_options)
+    assert _dots(p) == [(0, -1, False), (0, 0, True), (0, 1, False)]
+
+    p = plot_piecewise(Heaviside(x), (x, -2, 2), **p_options)
+    assert _dots(p) == [(0, 0, False), (0, 0.5, True), (0, 1, False)]
+
+    p = plot_piecewise(floor(x), (x, -1, 2), **p_options)
+    assert _dots(p) == [
+        (0, -1, False), (0, 0, True), (1, 0, False), (1, 1, True),
+        (2, 1, False), (2, 2, True)]
+
+    p = plot_piecewise(ceiling(x), (x, -1, 1), **p_options)
+    assert _dots(p) == [(-1, -1, True), (-1, 0, False), (0, 0, True),
+                        (0, 1, False)]
+
+    p = plot_piecewise(frac(x), (x, 0, 2), **p_options)
+    assert _dots(p) == [(1, 0, True), (1, 1, False), (2, 0, True),
+                        (2, 1, False)]
+
+
+def test_plot_piecewise_undefined_points(p_options):
+    # Verify that points where the expression is undefined, but both
+    # one-sided limits are finite, get empty dots: a hole, or the two ends
+    # of a jump.
+
+    x = symbols("x")
+    p = plot_piecewise((x**2 - 1) / (x - 1), (x, -1, 3), **p_options)
+    assert _dots(p) == [(1, 2, False), (1, 2, False)]
+
+    p = plot_piecewise(sin(x) / x, (x, -3, 3), **p_options)
+    assert _dots(p) == [(0, 1, False), (0, 1, False)]
+
+    p = plot_piecewise(Abs(x) / x, (x, -2, 2), **p_options)
+    assert _dots(p) == [(0, -1, False), (0, 1, False)]
+
+
+def test_plot_piecewise_unchanged_cases(p_options):
+    # Verify that poles and floor of a nonlinear argument are left as before
+
+    x = symbols("x")
+    p = plot_piecewise(1 / (x - 1), (x, -1, 3), **p_options)
+    assert len(p.series) == 1
+    assert isinstance(p.series[0], LineOver1DRangeSeries)
+
+    p = plot_piecewise(floor(x**2), (x, -1, 1), **p_options)
+    assert len(p.series) == 1
+    assert isinstance(p.series[0], LineOver1DRangeSeries)
 
 
 def test_plot_piecewise_short_open_interval(p_options):

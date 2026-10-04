@@ -1705,6 +1705,14 @@ def plot_piecewise(*args, **kwargs):
     """
     Plots univariate piecewise functions.
 
+    Jumps are shown with filled and empty dots. Expressions containing
+    ``sign``, ``Heaviside``, ``floor``, ``ceiling`` or ``frac`` are rewritten
+    as piecewise functions over the plotting range; for ``floor``,
+    ``ceiling`` and ``frac`` this requires an argument that is linear in the
+    plotting variable. Points where the expression is undefined but has
+    finite one-sided limits, such as ``x = 1`` for ``(x**2 - 1) / (x - 1)``,
+    get empty dots. Poles are not affected.
+
     Typical usage examples are in the followings:
 
     - Plotting a single expression with the default range (-10, 10):
@@ -1775,6 +1783,24 @@ def plot_piecewise(*args, **kwargs):
        Plot object containing:
        [0]: cartesian line: 0 for x over (-10, 0)
        [1]: cartesian line: 1 for x over (1.00000000000000e-6, 10)
+
+    Functions with jumps, such as ``floor``, are rewritten as piecewise
+    functions:
+
+    .. plot::
+       :context: close-figs
+       :format: doctest
+       :include-source: True
+
+       >>> from sympy import floor
+       >>> plot_piecewise(floor(x), (x, -1, 1))
+       Plot object containing:
+       [0]: cartesian line: -1 for x over (-1, -1.00000000000000e-6)
+       [1]: 2D list plot
+       [2]: cartesian line: 0 for x over (0, 0.999999000000000)
+       [3]: 2D list plot
+       [4]: 2D list plot
+       [5]: 2D list plot
 
     Plot multiple expressions in which the second piecewise expression has
     a dotted line style. Use the ``label`` keyword argument to set the
