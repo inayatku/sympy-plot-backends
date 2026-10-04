@@ -64,7 +64,7 @@ def _process_piecewise(piecewise, _range, label, **kwargs):
                 while diff < 1:
                     diff *= 10
                     e -= 1
-                offset *= e
+                offset *= 10**e
 
             # prevent NaNs from happening at the ends of the interval
             if _set.left_open:

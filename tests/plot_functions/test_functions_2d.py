@@ -634,6 +634,21 @@ def test_plot_piecewise_multiple_functions(p_options):
     assert len([s for s in p.series if s.get_label(True)]) == 2
 
 
+def test_plot_piecewise_short_open_interval(p_options):
+    # Verify that the open end of a piece shorter than one unit is evaluated
+    # inside the piece, so that its empty dot has a finite value.
+
+    x = symbols("x")
+    f = Piecewise((sqrt(Rational(1, 2) - x), x < Rational(1, 2)), (1, True))
+    p = plot_piecewise(f, (x, 0, 1), **p_options)
+    empty = [t for t in p.series
+             if isinstance(t, List2DSeries) and not t.is_filled]
+    assert len(empty) == 1
+    xx, yy = empty[0].get_data()
+    assert xx[0] < 0.5
+    assert np.isfinite(yy[0])
+
+
 @pytest.mark.skipif(ipy is None, reason="ipywidgets is not installed")
 @pytest.mark.filterwarnings("ignore:The following keyword arguments are unused.")
 def test_functions_iplot_integration(pi_options):
