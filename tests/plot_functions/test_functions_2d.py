@@ -751,6 +751,22 @@ def test_plot_piecewise_pieces(p_options):
         [(x, Interval(0, 1)), (y, Interval(1, 2))], **p_options))
 
 
+def test_plot_piecewise_points(p_options):
+    # Verify that points= adds filled dots at (a, f(a)) inside the range,
+    # and skips the points where the expression is not defined.
+
+    x = symbols("x")
+    f = Piecewise((x**2, x < 1), (2*x - 1, True))
+    p1 = plot_piecewise(f, (x, -2, 3), **p_options)
+    p2 = plot_piecewise(f, (x, -2, 3), points=[-1, 2, 5], **p_options)
+    new = sorted(set(_dots(p2)) - set(_dots(p1)))
+    assert new == [(-1, 1, True), (2, 3, True)]
+
+    with warns(UserWarning, match="No dot is drawn at x = 0"):
+        p = plot_piecewise(sin(x) / x, (x, -3, 3), points=[0], **p_options)
+    assert _dots(p) == [(0, 1, False), (0, 1, False)]
+
+
 @pytest.mark.skipif(ipy is None, reason="ipywidgets is not installed")
 @pytest.mark.filterwarnings("ignore:The following keyword arguments are unused.")
 def test_functions_iplot_integration(pi_options):

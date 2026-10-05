@@ -35,6 +35,7 @@ from sympy import (
     latex, Tuple, Symbol, oo, cos, sin, Piecewise, Set, Union, sympify
 )
 from sympy.external import import_module
+import warnings
 
 
 _repl = {"params": _PARAMS, "label": _LABEL_PF}
@@ -1783,6 +1784,31 @@ def _convert_pieces(args):
     return new_args
 
 
+def _marked_points(expr, _range, points, **kwargs):
+    """Filled dots at (a, f(a)) for each x-value ``a`` in ``points`` that is
+    inside the plotting range and where the expression has a finite value.
+    """
+    x, start, end = _range
+    if not isinstance(points, (list, tuple, set)):
+        points = [points]
+    xx, yy = [], []
+    for a in points:
+        a = sympify(a)
+        if not (start <= a <= end):
+            continue
+        value = expr.subs(x, a).evalf()
+        if not (value.is_real and value.is_finite):
+            warnings.warn(
+                "No dot is drawn at %s = %s: %s is not defined "
+                "there." % (x, a, expr))
+            continue
+        xx.append(float(a))
+        yy.append(float(value))
+    if not xx:
+        return []
+    return [List2DSeries(xx, yy, is_scatter=True, fill=True, **kwargs)]
+
+
 @modify_plot_functions_doc(LineOver1DRangeSeries, replace=_repl)
 def plot_piecewise(*args, **kwargs):
     """
@@ -1834,6 +1860,11 @@ def plot_piecewise(*args, **kwargs):
 
     dots : boolean
         Wheter to show circular markers at the endpoints. Default to True.
+
+    points : list
+        Values of the plotting variable where a filled dot is drawn on the
+        curve, to mark a point. Values outside the plotting range, or where
+        the expression is not defined, get no dot. Default to an empty list.
 
     Examples
     ========
@@ -1912,6 +1943,22 @@ def plot_piecewise(*args, **kwargs):
        [4]: 2D list plot
        [5]: 2D list plot
 
+    Mark chosen points of the curve with filled dots:
+
+    .. plot::
+       :context: close-figs
+       :format: doctest
+       :include-source: True
+
+       >>> f = Piecewise((x**2, x < 1), (2*x - 1, True))
+       >>> plot_piecewise(f, (x, -2, 3), points=[-1, 2])
+       Plot object containing:
+       [0]: cartesian line: x**2 for x over (-2, 0.999999000000000)
+       [1]: 2D list plot
+       [2]: cartesian line: 2*x - 1 for x over (1, 3)
+       [3]: 2D list plot
+       [4]: 2D list plot
+
     Plot multiple expressions in which the second piecewise expression has
     a dotted line style. Use the ``label`` keyword argument to set the
     appropriate entries for the legend:
@@ -1952,6 +1999,7 @@ def plot_piecewise(*args, **kwargs):
     if kwargs.pop("params", None) is not None:
         raise NotImplementedError(
             "plot_piecewise doesn't support interactive widgets.")
+    points = kwargs.pop("points", [])
 
     args = _plot_sympify(_convert_pieces(args))
     plot_expr = _check_arguments(args, 1, 1)
@@ -1983,6 +2031,7 @@ def plot_piecewise(*args, **kwargs):
     for i, a in enumerate(plot_expr):
         expr, r, lbl, rkw = a
         series = line(expr, r, lbl, rkw, **kwargs)
+        series += _marked_points(expr, r, points, rendering_kw=rkw, **kwargs)
         if i < len(labels):
             # this solve issue 32:
             # https://github.com/Davide-sd/sympy-plot-backends/issues/32
