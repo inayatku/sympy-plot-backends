@@ -20,7 +20,7 @@ from sympy import (
     And, Or, Eq, Ne, Interval, Sum, oo, I, pi, S,
     sympify, Integral, Circle, Point, Ellipse, Rational,
     Polygon, Curve, Segment, Point2D, Point3D, Line3D, Plane, IndexedBase,
-    Function, sign, floor, ceiling, frac
+    Function, sign, floor, ceiling, frac, FiniteSet
 )
 from sympy.testing.pytest import skip
 from sympy.external import import_module
@@ -720,6 +720,35 @@ def test_plot_piecewise_short_open_interval(p_options):
     xx, yy = empty[0].get_data()
     assert xx[0] < 0.5
     assert np.isfinite(yy[0])
+
+
+def test_plot_piecewise_pieces(p_options):
+    # Verify that a list of (expression, set) pairs gives the same plot as
+    # the equivalent Piecewise expression, and that without a range the
+    # plot covers the union of the sets, so that its ends get dots.
+
+    x, y = symbols("x, y")
+    pieces = [(x**2, Interval.Ropen(-1, 1)), (3 - x, Interval(1, 3))]
+    f = Piecewise((x**2, (x >= -1) & (x < 1)), (3 - x, (x >= 1) & (x <= 3)))
+    p1 = plot_piecewise(pieces, (x, -2, 4), **p_options)
+    p2 = plot_piecewise(f, (x, -2, 4), **p_options)
+    assert _dots(p1) == _dots(p2)
+    assert _dots(p1) == [(-1, 1, True), (1, 1, False), (1, 2, True),
+                         (3, 0, True)]
+
+    p = plot_piecewise(pieces, **p_options)
+    assert _dots(p) == _dots(p1)
+    lines = [s for s in p.series if isinstance(s, LineOver1DRangeSeries)]
+    assert [float(s.ranges[0][1]) for s in lines] == [-1, 1]
+
+    # tuple notation with a label; constant pieces and an isolated point
+    p = plot_piecewise(
+        ([(1, Interval.Lopen(0, 1)), (2, FiniteSet(2))], "g"), **p_options)
+    assert _dots(p) == [(0, 1, False), (1, 1, True), (2, 2, True)]
+    assert p.series[0].get_label(False) == "g"
+
+    raises(ValueError, lambda: plot_piecewise(
+        [(x, Interval(0, 1)), (y, Interval(1, 2))], **p_options))
 
 
 @pytest.mark.skipif(ipy is None, reason="ipywidgets is not installed")

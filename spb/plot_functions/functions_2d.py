@@ -31,7 +31,9 @@ from spb.series import (
 from spb.utils import (
     _plot_sympify, _check_arguments, _unpack_args, _instantiate_backend,
 )
-from sympy import latex, Tuple, Symbol, oo, cos, sin
+from sympy import (
+    latex, Tuple, Symbol, oo, cos, sin, Piecewise, Set, Union, sympify
+)
 from sympy.external import import_module
 
 
@@ -1700,6 +1702,87 @@ def plot_list(*args, **kwargs):
     return graphics(*series, **kwargs)
 
 
+def _is_pieces(arg):
+    """True if ``arg`` is a list or tuple of (expression, set) pairs."""
+    return (
+        isinstance(arg, (list, tuple)) and (len(arg) > 0) and all(
+            isinstance(p, (list, tuple)) and (len(p) == 2)
+            and isinstance(p[1], Set) for p in arg)
+    )
+
+
+def _is_range_tuple(arg):
+    return (
+        isinstance(arg, (tuple, Tuple)) and (len(arg) == 3)
+        and isinstance(arg[0], Symbol)
+    )
+
+
+def _pieces_range(pieces, x):
+    """A plotting range covering the union of the sets, with a margin so
+    that the dots at the ends of the domain are drawn. None if the union is
+    unbounded."""
+    domain = Union(*[s for _, s in pieces])
+    start, end = domain.inf, domain.sup
+    if not (start.is_finite and end.is_finite):
+        return None
+    margin = (end - start) / 20 if end > start else 1
+    return (x, start - margin, end + margin)
+
+
+def _convert_pieces(args):
+    """Replace each list of (expression, set) pairs in the arguments of
+    ``plot_piecewise`` with the equivalent Piecewise expression. Where no
+    range is given, use one that covers the union of the sets.
+    """
+    all_pieces = [a for a in args if _is_pieces(a)] + [
+        a[0] for a in args
+        if isinstance(a, tuple) and len(a) > 0 and _is_pieces(a[0])]
+    if not all_pieces:
+        return args
+
+    free = set().union(*[
+        sympify(e).free_symbols for pieces in all_pieces for e, _ in pieces])
+    ranges = [a for a in args if _is_range_tuple(a)] + [
+        r for a in args if isinstance(a, tuple) for r in a
+        if _is_range_tuple(r)]
+    if len(free) > 1:
+        raise ValueError(
+            "The pieces must be expressions of one variable. "
+            "Received: %s" % free)
+    if free:
+        x = free.pop()
+    elif ranges:
+        x = ranges[0][0]
+    else:
+        x = Symbol("x")
+
+    def to_piecewise(pieces):
+        return Piecewise(*[
+            (sympify(e), s.as_relational(x)) for e, s in pieces])
+
+    new_args = []
+    for a in args:
+        if _is_pieces(a):
+            new_args.append(to_piecewise(a))
+        elif isinstance(a, tuple) and len(a) > 0 and _is_pieces(a[0]):
+            rest = list(a[1:])
+            if not any(_is_range_tuple(r) for r in rest):
+                r = _pieces_range(a[0], x)
+                if r is not None:
+                    rest.insert(0, r)
+            new_args.append((to_piecewise(a[0]), *rest))
+        else:
+            new_args.append(a)
+
+    single_pieces = [a for a in args if _is_pieces(a)]
+    if single_pieces and not ranges:
+        r = _pieces_range([p for pieces in single_pieces for p in pieces], x)
+        if r is not None:
+            new_args.append(r)
+    return new_args
+
+
 @modify_plot_functions_doc(LineOver1DRangeSeries, replace=_repl)
 def plot_piecewise(*args, **kwargs):
     """
@@ -1726,6 +1809,15 @@ def plot_piecewise(*args, **kwargs):
       .. code-block::
 
          plot_piecewise(expr1, expr2, ..., range, **kwargs)
+
+    - Plotting a function given by its pieces, as a list of (expression, set)
+      pairs. The function is undefined outside the union of the sets. If no
+      range is given, the plot covers the union of the sets:
+
+      .. code-block::
+
+         plot_piecewise([(expr1, set1), (expr2, set2), ...], range [opt],
+            **kwargs)
 
     - Plotting multiple expressions with multiple ranges, custom labels and
       rendering options:
@@ -1802,6 +1894,24 @@ def plot_piecewise(*args, **kwargs):
        [4]: 2D list plot
        [5]: 2D list plot
 
+    A function given by its pieces, each with the set where it applies:
+
+    .. plot::
+       :context: close-figs
+       :format: doctest
+       :include-source: True
+
+       >>> from sympy import Interval
+       >>> plot_piecewise(
+       ...     [(x**2, Interval.Ropen(-1, 1)), (3 - x, Interval(1, 3))])
+       Plot object containing:
+       [0]: cartesian line: x**2 for x over (-1, 0.999999000000000)
+       [1]: 2D list plot
+       [2]: cartesian line: 3 - x for x over (1, 3)
+       [3]: 2D list plot
+       [4]: 2D list plot
+       [5]: 2D list plot
+
     Plot multiple expressions in which the second piecewise expression has
     a dotted line style. Use the ``label`` keyword argument to set the
     appropriate entries for the legend:
@@ -1843,7 +1953,7 @@ def plot_piecewise(*args, **kwargs):
         raise NotImplementedError(
             "plot_piecewise doesn't support interactive widgets.")
 
-    args = _plot_sympify(args)
+    args = _plot_sympify(_convert_pieces(args))
     plot_expr = _check_arguments(args, 1, 1)
     if any(callable(p[0]) for p in plot_expr):
         raise TypeError("plot_piecewise requires symbolic expressions.")
