@@ -2,8 +2,9 @@ from sympy import (
     sin, cos, Piecewise, piecewise_fold, Interval, Union,
     FiniteSet, Eq, Ne, Expr, Plane, Curve, Point3D,
     And, Heaviside, ceiling, degree, floor, frac, limit, sign, solveset,
-    together
+    together, oo, S, AccumBounds
 )
+from sympy.calculus.singularities import singularities
 from sympy.core.relational import Relational
 from sympy.geometry.line import LinearEntity3D
 # NOTE: from sympy import EmptySet is a different thing!!!
@@ -217,6 +218,131 @@ def _removable_points(expr, _range, max_points=20):
         if limits and all(lim.is_finite for lim in limits):
             points.append(c)
     return points
+
+
+def _pieces_and_sets(expr, _range):
+    """The pieces of ``expr``, each with the set where it applies, after
+    the functions that jump are rewritten as Piecewise."""
+    expr = _jumps_to_piecewise(expr, _range)
+    if isinstance(expr, Piecewise):
+        return expr.as_expr_set_pairs()
+    return [(expr, S.Reals)]
+
+
+def _real_singularities(e, x, domain):
+    """singularities(e, x, domain), without calling it for a polynomial."""
+    if e.is_polynomial(x):
+        return S.EmptySet
+    return singularities(e, x, domain)
+
+
+def _interesting_points(expr, x):
+    """Real points where the function may change its behavior: the ends of
+    its pieces and the real singularities of each piece. None if there are
+    infinitely many or if they cannot be computed."""
+    try:
+        points = set()
+        for e, s in _pieces_and_sets(expr, (x, -oo, oo)):
+            if s.is_empty:
+                continue
+            ends = s.boundary
+            sing = _real_singularities(e, x, S.Reals).intersect(s.closure)
+            for t in (ends, sing):
+                if t.is_empty:
+                    continue
+                if not isinstance(t, FiniteSet):
+                    return None
+                points.update(t)
+        return sorted(p for p in points if p.is_real and p.is_finite)
+    except Exception:
+        return None
+
+
+def _piece_ends(expr, _range):
+    """The ends of the pieces of ``expr`` in the plotting range."""
+    x, a, b = _range
+    ends = set()
+    try:
+        for e, s in _pieces_and_sets(expr, _range):
+            boundary = s.intersect(Interval(a, b)).boundary
+            if isinstance(boundary, FiniteSet):
+                ends.update(boundary)
+    except Exception:
+        pass
+    return ends
+
+
+def _vertical_asymptotes(expr, _range, max_points=50):
+    """Points inside the plotting range where a one-sided limit of ``expr``
+    is infinite. Empty if they cannot be computed."""
+    x, a, b = _range
+    window = Interval(a, b)
+    points = set()
+    try:
+        # quick exit, before the pieces are computed
+        if _real_singularities(expr, x, window).is_empty:
+            return []
+    except Exception:
+        pass
+    try:
+        for e, s in _pieces_and_sets(expr, _range):
+            s = s.intersect(window)
+            if s.is_empty:
+                continue
+            candidates = _real_singularities(e, x, window).intersect(
+                s.closure)
+            if candidates.is_empty:
+                continue
+            if (
+                not isinstance(candidates, FiniteSet)
+                or len(candidates) > max_points
+            ):
+                return []
+            for c in candidates:
+                if c in (a, b):
+                    continue
+                # only the sides of c where this piece applies
+                sides = [d for d, t in (("-", c - 1), ("+", c + 1))
+                         if s.intersect(Interval(*sorted([c, t]))).measure]
+                for d in sides:
+                    if limit(e, x, c, d).has(oo, -oo, S.ComplexInfinity):
+                        points.add(c)
+                        break
+    except Exception:
+        return []
+    return sorted(points)
+
+
+def _is_finite_number(v):
+    # a limit that oscillates, like that of sin(x), is an AccumBounds
+    return v.is_real and v.is_finite and not v.has(AccumBounds)
+
+
+def _asymptotes_at_infinity(expr, x):
+    """Horizontal or oblique asymptotes of ``expr`` as x tends to -oo and to
+    oo, as (slope, intercept) pairs, without repetitions."""
+    try:
+        pieces = _pieces_and_sets(expr, (x, -oo, oo))
+    except Exception:
+        return []
+    result = []
+    for direction in (-oo, oo):
+        for e, s in pieces:
+            if (s.inf if direction == -oo else s.sup) != direction:
+                continue
+            try:
+                slope = limit(e / x, x, direction)
+                if _is_finite_number(slope):
+                    intercept = limit(e - slope * x, x, direction)
+                    if (
+                        _is_finite_number(intercept)
+                        and (slope, intercept) not in result
+                    ):
+                        result.append((slope, intercept))
+            except Exception:
+                pass
+            break
+    return result
 
 
 def _prepare_piecewise(expr, _range):

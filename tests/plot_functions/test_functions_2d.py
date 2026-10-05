@@ -20,7 +20,7 @@ from sympy import (
     And, Or, Eq, Ne, Interval, Sum, oo, I, pi, S,
     sympify, Integral, Circle, Point, Ellipse, Rational,
     Polygon, Curve, Segment, Point2D, Point3D, Line3D, Plane, IndexedBase,
-    Function, sign, floor, ceiling, frac, FiniteSet
+    Function, sign, floor, ceiling, frac, FiniteSet, atan
 )
 from sympy.testing.pytest import skip
 from sympy.external import import_module
@@ -695,13 +695,9 @@ def test_plot_piecewise_undefined_points(p_options):
 
 
 def test_plot_piecewise_unchanged_cases(p_options):
-    # Verify that poles and floor of a nonlinear argument are left as before
+    # Verify that floor of a nonlinear argument is left as before
 
     x = symbols("x")
-    p = plot_piecewise(1 / (x - 1), (x, -1, 3), **p_options)
-    assert len(p.series) == 1
-    assert isinstance(p.series[0], LineOver1DRangeSeries)
-
     p = plot_piecewise(floor(x**2), (x, -1, 1), **p_options)
     assert len(p.series) == 1
     assert isinstance(p.series[0], LineOver1DRangeSeries)
@@ -765,6 +761,98 @@ def test_plot_piecewise_points(p_options):
     with warns(UserWarning, match="No dot is drawn at x = 0"):
         p = plot_piecewise(sin(x) / x, (x, -3, 3), points=[0], **p_options)
     assert _dots(p) == [(0, 1, False), (0, 1, False)]
+
+
+def _dotted_lines(p):
+    # (x0, y0, x1, y1) of the dotted lines drawn for the asymptotes
+    return sorted(
+        tuple(round(float(v), 4) + 0.0
+              for v in (xx[0], yy[0], xx[-1], yy[-1]))
+        for s in p.series
+        if isinstance(s, List2DSeries)
+        and s.rendering_kw.get("linestyle") == ":"
+        for xx, yy in [s.get_data()])
+
+
+def _line_ranges(p):
+    return [(round(float(s.ranges[0][1]), 4), round(float(s.ranges[0][2]), 4))
+            for s in p.series if isinstance(s, LineOver1DRangeSeries)]
+
+
+def test_plot_piecewise_vertical_asymptotes(p_options):
+    # Verify that the curve is not joined across a vertical asymptote, and
+    # that the y-limits leave out the values close to it, unless ylim is
+    # given. No line is drawn for the asymptote unless asked.
+
+    x = symbols("x")
+    p = plot_piecewise(1 / (x - 1), (x, -1, 3), **p_options)
+    assert _line_ranges(p) == [(-1, 1), (1, 3)]
+    assert _dotted_lines(p) == []
+    low, high = p.ylim
+    assert -15 < low < -2 and 2 < high < 15
+
+    p = plot_piecewise(1 / (x - 1), (x, -1, 3), ylim=(-1, 1), **p_options)
+    assert tuple(p.ylim) == (-1, 1)
+
+    p = plot_piecewise(tan(x), (x, -4, 4), **p_options)
+    assert len(_line_ranges(p)) == 3
+
+    # a hole and a jump are not asymptotes; without asymptotes, ylim is
+    # left to the backend
+    p = plot_piecewise(sin(x) / x + Heaviside(x - 1), (x, -3, 3), **p_options)
+    assert p.ylim is None
+
+    # an asymptote at the end of a piece: the pieces are already split
+    f = Piecewise((x, x < 0), (1 / x, True))
+    p = plot_piecewise(f, (x, -2, 2), **p_options)
+    assert len(_line_ranges(p)) == 2
+    assert p.ylim is not None
+
+
+def test_plot_piecewise_asymptotes_option(p_options):
+    # Verify that asymptotes=True draws dotted lines for the vertical
+    # asymptotes and for the horizontal or oblique asymptotes at -oo and oo.
+
+    x = symbols("x")
+    p = plot_piecewise((x**2 + 1) / (x**2 - 4), (x, -10, 10),
+                       asymptotes=True, **p_options)
+    low, high = [round(float(t), 4) + 0.0 for t in p.ylim]
+    assert _dotted_lines(p) == [
+        (-10, 1, 10, 1), (-2, low, -2, high), (2, low, 2, high)]
+
+    p = plot_piecewise((x**2 + 1) / x, (x, -10, 10), asymptotes=True,
+                       **p_options)
+    low, high = [round(float(t), 4) + 0.0 for t in p.ylim]
+    assert _dotted_lines(p) == [(-10, -10, 10, 10), (0, low, 0, high)]
+
+    p = plot_piecewise(atan(x), (x, -10, 10), asymptotes=True, **p_options)
+    assert _dotted_lines(p) == [(-10, -1.5708, 10, -1.5708),
+                                (-10, 1.5708, 10, 1.5708)]
+
+    # sin(x) has no limit at infinity
+    p = plot_piecewise(sin(x), (x, -10, 10), asymptotes=True, **p_options)
+    assert _dotted_lines(p) == []
+
+
+def test_plot_piecewise_default_window(p_options):
+    # Verify that, without a range, the plotting range includes the ends of
+    # the pieces and the singular points, if they are outside the default
+    # range (-10, 10).
+
+    x = symbols("x")
+    p = plot_piecewise(1 / (x - 50), **p_options)
+    lines = _line_ranges(p)
+    assert lines == [(45, 50), (50, 55)]
+
+    p = plot_piecewise(sign(x - 30) + 1 / (x - 25), **p_options)
+    lines = _line_ranges(p)
+    assert min(lines)[0] < 25 and max(t[1] for t in lines) > 30
+
+    # all inside (-10, 10), or no such points: the default range is kept
+    for expr in [1 / (x - 1), x**3 - 3 * x, tan(x)]:
+        p = plot_piecewise(expr, **p_options)
+        lines = _line_ranges(p)
+        assert (min(lines)[0], max(t[1] for t in lines)) == (-10, 10)
 
 
 @pytest.mark.skipif(ipy is None, reason="ipywidgets is not installed")

@@ -23,6 +23,10 @@ from spb.graphics import (
     graphics, line, line_parametric_2d,
     surface, contour, implicit_2d, list_2d, geometry
 )
+from spb.graphics.functions_2d import (
+    _interesting_points, _piece_ends, _vertical_asymptotes,
+    _asymptotes_at_infinity
+)
 from spb.series import (
     Parametric2DLineSeries, PlaneSeries, GenericDataSeries,
     LineOver1DRangeSeries, List2DSeries, ImplicitSeries, ContourSeries,
@@ -30,6 +34,7 @@ from spb.series import (
 )
 from spb.utils import (
     _plot_sympify, _check_arguments, _unpack_args, _instantiate_backend,
+    _is_range,
 )
 from sympy import (
     latex, Tuple, Symbol, oo, cos, sin, Piecewise, Set, Union, sympify
@@ -1809,6 +1814,104 @@ def _marked_points(expr, _range, points, **kwargs):
     return [List2DSeries(xx, yy, is_scatter=True, fill=True, **kwargs)]
 
 
+def _given_ranges(args, n):
+    """For each of the ``n`` expressions to plot, whether its plotting range
+    is among the arguments."""
+    if any(_is_range(a) for a in args):
+        return [True] * n
+    tuples = [a for a in args if isinstance(a, Tuple)]
+    if len(tuples) == n:
+        return [any(_is_range(t) for t in a) for a in tuples]
+    return [False] * n
+
+
+def _default_window(expr, _range):
+    """The default plotting range, unless the ends of the pieces or the
+    singular points of the expression are not all inside it. In that case,
+    a range around these points."""
+    x, start, end = _range
+    points = _interesting_points(expr, x)
+    if not points or all(start <= p <= end for p in points):
+        return _range
+    low, high = points[0], points[-1]
+    margin = max(5, (high - low) / 4)
+    return (x, low - margin, high + margin)
+
+
+def _split_range(expr, _range, asymptotes):
+    """Split the plotting range at the vertical asymptotes that are inside a
+    piece, so that the curve is not joined across them. (At the ends of the
+    pieces the curve is already split.)"""
+    if not asymptotes:
+        return [_range]
+    x, start, end = _range
+    ends = _piece_ends(expr, _range)
+    cuts = [c for c in asymptotes if c not in ends]
+    if not cuts:
+        return [_range]
+    offset = (end - start) * 1e-6
+    bounds = [start] + [b for c in cuts for b in (c - offset, c + offset)]
+    bounds.append(end)
+    return [(x, bounds[i], bounds[i + 1]) for i in range(0, len(bounds), 2)]
+
+
+def _asymptote_style(backend):
+    """Black dotted lines, with the rendering keywords of the backend."""
+    name = getattr(backend, "__name__", type(backend).__name__)
+    if "Bokeh" in name:
+        return {"color": "#000000", "line_dash": "dotted"}
+    if "Plotly" in name:
+        return {"line_color": "black", "line_dash": "dot"}
+    return {"color": "k", "linestyle": ":"}
+
+
+def _asymptote_lines(expr, _range, vertical, ylim, style):
+    """Dotted lines for the asymptotes of ``expr``: the vertical asymptotes
+    in the plotting range, from the bottom to the top of ``ylim``, and the
+    horizontal or oblique asymptotes as x tends to -oo or oo, over the
+    plotting range."""
+    x, start, end = _range
+    segments = []
+    if ylim is not None:
+        segments += [([c, c], list(ylim)) for c in vertical]
+    for slope, intercept in _asymptotes_at_infinity(expr, x):
+        segments.append((
+            [start, end],
+            [slope * start + intercept, slope * end + intercept]))
+    return [
+        List2DSeries(
+            [float(t) for t in xx], [float(t) for t in yy],
+            rendering_kw=dict(style), show_in_legend=False)
+        for xx, yy in segments
+    ]
+
+
+def _ylim_away_from_asymptotes(groups):
+    """y-limits from the values of the curves that are not close to a
+    vertical asymptote: the values close to it would hide the rest of the
+    plot. ``groups`` holds (series, asymptotes, distance) for each
+    expression."""
+    np = import_module("numpy")
+    values = []
+    for series, asymptotes, distance in groups:
+        for s in series:
+            if not isinstance(s, (LineOver1DRangeSeries, List2DSeries)):
+                continue
+            xx, yy = s.get_data()[:2]
+            xx = np.asarray(xx, dtype=float)
+            yy = np.asarray(yy, dtype=float)
+            keep = np.isfinite(yy)
+            for c in asymptotes:
+                keep &= np.abs(xx - float(c)) > float(distance)
+            values.append(yy[keep])
+    values = np.concatenate(values) if values else np.array([])
+    if values.size == 0:
+        return None
+    low, high = float(values.min()), float(values.max())
+    margin = 0.1 * (high - low) if high > low else 1
+    return (low - margin, high + margin)
+
+
 @modify_plot_functions_doc(LineOver1DRangeSeries, replace=_repl)
 def plot_piecewise(*args, **kwargs):
     """
@@ -1820,7 +1923,15 @@ def plot_piecewise(*args, **kwargs):
     ``ceiling`` and ``frac`` this requires an argument that is linear in the
     plotting variable. Points where the expression is undefined but has
     finite one-sided limits, such as ``x = 1`` for ``(x**2 - 1) / (x - 1)``,
-    get empty dots. Poles are not affected.
+    get empty dots.
+
+    The curve is not joined across a vertical asymptote. If the expression
+    has vertical asymptotes in the plotting range, and ``ylim`` is not
+    given, the y-limits are chosen from the values that are not close to
+    them. If no range is given and the ends of the pieces or the points
+    where the expression is not defined are not all inside (-10, 10), the
+    plotting range is chosen around them. To choose the window yourself,
+    give the range and the ``xlim`` and ``ylim`` keyword arguments.
 
     Typical usage examples are in the followings:
 
@@ -1865,6 +1976,11 @@ def plot_piecewise(*args, **kwargs):
         Values of the plotting variable where a filled dot is drawn on the
         curve, to mark a point. Values outside the plotting range, or where
         the expression is not defined, get no dot. Default to an empty list.
+
+    asymptotes : boolean
+        If True, draw dotted lines for the vertical asymptotes in the
+        plotting range, and for the horizontal or oblique asymptotes as the
+        plotting variable tends to -oo or oo. Default to False.
 
     Examples
     ========
@@ -1959,6 +2075,21 @@ def plot_piecewise(*args, **kwargs):
        [3]: 2D list plot
        [4]: 2D list plot
 
+    Show the asymptotes with dotted lines. The y-limits leave out the values
+    close to the vertical asymptotes:
+
+    .. plot::
+       :context: close-figs
+       :format: doctest
+       :include-source: True
+
+       >>> plot_piecewise((x + 1) / (x - 2), asymptotes=True)
+       Plot object containing:
+       [0]: cartesian line: (x + 1)/(x - 2) for x over (-10, 1.99998000000000)
+       [1]: cartesian line: (x + 1)/(x - 2) for x over (2.00002000000000, 10)
+       [2]: 2D list plot
+       [3]: 2D list plot
+
     Plot multiple expressions in which the second piecewise expression has
     a dotted line style. Use the ``label`` keyword argument to set the
     appropriate entries for the legend:
@@ -1982,11 +2113,12 @@ def plot_piecewise(*args, **kwargs):
        [3]: 2D list plot
        [4]: cartesian line: sin(x) for x over (-8, -5.00000100000000)
        [5]: 2D list plot
-       [6]: cartesian line: cos(x) for x over (5.00000100000000, 8)
+       [6]: cartesian line: 1/x for x over (-5, -1.60000000000000e-5)
        [7]: 2D list plot
-       [8]: cartesian line: 1/x for x over (-5, 5)
+       [8]: cartesian line: cos(x) for x over (5.00000100000000, 8)
        [9]: 2D list plot
-       [10]: 2D list plot
+       [10]: cartesian line: 1/x for x over (1.60000000000000e-5, 5)
+       [11]: 2D list plot
 
     See Also
     ========
@@ -2000,6 +2132,7 @@ def plot_piecewise(*args, **kwargs):
         raise NotImplementedError(
             "plot_piecewise doesn't support interactive widgets.")
     points = kwargs.pop("points", [])
+    show_asymptotes = kwargs.pop("asymptotes", False)
 
     args = _plot_sympify(_convert_pieces(args))
     plot_expr = _check_arguments(args, 1, 1)
@@ -2027,11 +2160,21 @@ def plot_piecewise(*args, **kwargs):
     # because it would override the optimal settings chosen by the backend.
     # If a user want to set custom rendering keywords, just use the notation
     # (expr, range, label [optional], rendering_kw [optional])
+    given_range = _given_ranges(args, len(plot_expr))
     color_series_dict = dict()
+    window_groups = []
+    asymptote_data = []
     for i, a in enumerate(plot_expr):
         expr, r, lbl, rkw = a
-        series = line(expr, r, lbl, rkw, **kwargs)
+        if not given_range[i]:
+            r = _default_window(expr, r)
+        asymptotes = _vertical_asymptotes(expr, r)
+        series = []
+        for sub_range in _split_range(expr, r, asymptotes):
+            series += line(expr, sub_range, lbl, rkw, **kwargs)
         series += _marked_points(expr, r, points, rendering_kw=rkw, **kwargs)
+        window_groups.append((list(series), asymptotes, (r[2] - r[1]) / 50))
+        asymptote_data.append((expr, r, asymptotes))
         if i < len(labels):
             # this solve issue 32:
             # https://github.com/Davide-sd/sympy-plot-backends/issues/32
@@ -2043,6 +2186,20 @@ def plot_piecewise(*args, **kwargs):
                 else:
                     s.label = ""
         color_series_dict[i] = series
+
+    # the y-limits come from the curves: not from the values close to a
+    # vertical asymptote, and not from the lines of the asymptotes
+    if ("ylim" not in kwargs) and (
+            show_asymptotes or any(g[1] for g in window_groups)):
+        ylim = _ylim_away_from_asymptotes(window_groups)
+        if ylim is not None:
+            kwargs["ylim"] = ylim
+
+    if show_asymptotes:
+        style = _asymptote_style(kwargs.get("backend", TWO_D_B))
+        for i, (expr, r, vertical) in enumerate(asymptote_data):
+            color_series_dict[i] += _asymptote_lines(
+                expr, r, vertical, kwargs.get("ylim", None), style)
 
     # NOTE: let's overwrite this keyword argument: the dictionary will be used
     # by the backend to assign the proper colors to the pieces
