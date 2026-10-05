@@ -190,9 +190,17 @@ def _removable_points(expr, _range, max_points=20):
     Abs(x) / x at x = 0. Poles are not returned.
 
     Only denominators that are polynomials in the plotting variable are
-    examined.
+    examined. For a Piecewise, each piece is examined in the set where it
+    applies.
     """
     x, a, b = _range
+    if isinstance(expr, Piecewise):
+        points = set()
+        for e, s in expr.as_expr_set_pairs():
+            points.update(
+                c for c in _removable_points(e, _range, max_points)
+                if c in s)
+        return sorted(points)
     den = together(expr).as_numer_denom()[1]
     if not den.has(x) or not den.is_polynomial(x):
         return []
@@ -217,8 +225,10 @@ def _prepare_piecewise(expr, _range):
     that jump, and remove from the domain the points where the expression is
     undefined but has finite one-sided limits, so that they get empty dots.
     """
-    points = _removable_points(expr, _range)
+    # rewrite first: SymPy's limit can hang on an expression containing
+    # Heaviside, for example sin(x)/x + Heaviside(x - 1) at x = 0
     expr = _jumps_to_piecewise(expr, _range)
+    points = _removable_points(expr, _range)
     if points:
         x = _range[0]
         expr = piecewise_fold(

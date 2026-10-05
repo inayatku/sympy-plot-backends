@@ -684,6 +684,15 @@ def test_plot_piecewise_undefined_points(p_options):
     p = plot_piecewise(Abs(x) / x, (x, -2, 2), **p_options)
     assert _dots(p) == [(0, -1, False), (0, 1, False)]
 
+    # a hole together with a jump: the jump is rewritten first, and the
+    # hole is found inside a piece
+    p = plot_piecewise(sin(x) / x + Heaviside(x - 1), (x, -3, 3), **p_options)
+    assert _dots(p) == [(0, 1, False), (0, 1, False), (1, 0.841, False),
+                        (1, 1.341, True), (1, 1.841, False)]
+
+    p = plot_piecewise(floor(x) + Abs(x) / x, (x, -0.5, 0.5), **p_options)
+    assert _dots(p) == [(0, -2, False), (0, 1, False)]
+
 
 def test_plot_piecewise_unchanged_cases(p_options):
     # Verify that poles and floor of a nonlinear argument are left as before
